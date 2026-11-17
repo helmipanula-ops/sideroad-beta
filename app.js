@@ -42,7 +42,7 @@
 
   // ---------- Kartta ----------
   var cv = $('map'), ctx = cv.getContext('2d'), dpr = 1, W = 0, H = 0;
-  var view = { cx: 0, cy: 0, s: 0.02 }; // s = px / m
+  var view = { cx: 0, cy: 0, s: 0.02, rot: 0 }; // s = px / m, rot = kartan kierto (rad, ajosuunta ylös)
   var layers = null;
   function resize() {
     dpr = window.devicePixelRatio || 1; var r = cv.getBoundingClientRect(); W = r.width; H = r.height;
@@ -67,12 +67,21 @@
     if (!pts) { pts = []; for (i = 0; i < G.nN; i += 7) pts.push(G.xy(i)); }
     pts.forEach(function (p) { minx = Math.min(minx, p[0]); maxx = Math.max(maxx, p[0]); miny = Math.min(miny, p[1]); maxy = Math.max(maxy, p[1]); });
     var r = cv.getBoundingClientRect(); W = r.width; H = r.height;
-    view.cx = (minx + maxx) / 2; view.cy = (miny + maxy) / 2;
+    view.cx = (minx + maxx) / 2; view.cy = (miny + maxy) / 2; view.rot = 0;
     view.s = Math.min(W / Math.max(200, (maxx - minx) * 1.15), H / Math.max(200, (maxy - miny) * 1.15));
     view.s = Math.max(0.003, Math.min(view.s, 2));
   }
-  function w2s(x, y) { return [(x - view.cx) * view.s + W / 2, (y - view.cy) * view.s + H / 2]; }
-  function s2w(px, py) { return [(px - W / 2) / view.s + view.cx, (py - H / 2) / view.s + view.cy]; }
+  // Ankkuri: ajotilassa oma sijainti on ruudun alaosassa, jotta edessä oleva tie näkyy
+  function ancX() { return W / 2; }
+  function ancY() { return D.on ? H * 0.7 : H / 2; }
+  function w2s(x, y) {
+    var dx = (x - view.cx) * view.s, dy = (y - view.cy) * view.s, c = Math.cos(view.rot), sn = Math.sin(view.rot);
+    return [dx * c + dy * sn + ancX(), -dx * sn + dy * c + ancY()];
+  }
+  function s2w(px, py) {
+    var dx = px - ancX(), dy = py - ancY(), c = Math.cos(view.rot), sn = Math.sin(view.rot);
+    return [(dx * c - dy * sn) / view.s + view.cx, (dx * sn + dy * c) / view.s + view.cy];
+  }
 
   function strokeLayer(path, color, px) { ctx.strokeStyle = color; ctx.lineWidth = px / view.s; ctx.stroke(path); }
   function polyline(pts, color, px, dash) {
@@ -87,7 +96,8 @@
     raf = 0; if (!W) { var r = cv.getBoundingClientRect(); W = r.width; H = r.height; }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.fillStyle = '#E4EAE7'; ctx.fillRect(0, 0, W, H);
     if (!G || !layers) return;
-    ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * (W / 2 - view.cx * view.s), dpr * (H / 2 - view.cy * view.s));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.translate(ancX(), ancY()); ctx.rotate(-view.rot);
+    ctx.scale(view.s, view.s); ctx.translate(-view.cx, -view.cy);
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     var z = view.s;
     if (z > 0.012) strokeLayer(layers.minor, '#FFFFFF', z > 0.15 ? 4 : z > 0.05 ? 2 : 1);
@@ -130,12 +140,11 @@
       ctx.fillStyle = p.r <= 1 ? '#0F1A21' : '#3F4E54'; ctx.fillText(p.n, sp[0], sp[1]);
     });
     // Oma sijainti
-    if (D.on && D.pos) {
-      var pxy = G.toXY(D.pos.lat, D.pos.lon), ps = w2s(pxy[0], pxy[1]);
+    if (D.on && D.pos && D.disp) {
+      var ps = w2s(D.disp[0], D.disp[1]);
       ctx.beginPath(); ctx.arc(ps[0], ps[1], Math.max(12, D.pos.acc * view.s), 0, Math.PI * 2); ctx.fillStyle = 'rgba(37,99,235,.15)'; ctx.fill();
-      if (D.pos.heading !== null && D.pos.heading !== undefined && !isNaN(D.pos.heading) && (D.pos.speed || 0) > 1) {
-        var hd = D.pos.heading * Math.PI / 180;
-        ctx.save(); ctx.translate(ps[0], ps[1]); ctx.rotate(hd);
+      if (D.head !== null) {
+        ctx.save(); ctx.translate(ps[0], ps[1]); ctx.rotate(D.headDisp - view.rot);
         ctx.beginPath(); ctx.moveTo(0, -17); ctx.lineTo(9, 7); ctx.lineTo(0, 3); ctx.lineTo(-9, 7); ctx.closePath();
         ctx.fillStyle = '#2563EB'; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke(); ctx.restore();
       } else {
@@ -166,7 +175,8 @@
     } else if (!drag.pinch) {
       var dx = e.offsetX - drag.x, dy = e.offsetY - drag.y; moved = Math.max(moved, Math.abs(dx) + Math.abs(dy));
       if (moved > 6 && D.on) D.follow = false;
-      view.cx = drag.cx - dx / view.s; view.cy = drag.cy - dy / view.s; draw();
+      var c = Math.cos(view.rot), sn = Math.sin(view.rot);
+      view.cx = drag.cx - (dx * c - dy * sn) / view.s; view.cy = drag.cy - (dx * sn + dy * c) / view.s; draw();
     }
   });
   function endPtr(e) {
@@ -180,11 +190,13 @@
   cv.addEventListener('wheel', function (e) { e.preventDefault(); zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
   function zoomAt(px, py, f) {
     var w = s2w(px, py); view.s = Math.max(0.003, Math.min(view.s * f, 3));
-    view.cx = w[0] - (px - W / 2) / view.s; view.cy = w[1] - (py - H / 2) / view.s; draw();
+    if (D.on) { D.userZoom = true; if (D.follow) { draw(); return; } }
+    var dx = px - ancX(), dy = py - ancY(), c = Math.cos(view.rot), sn = Math.sin(view.rot);
+    view.cx = w[0] - (dx * c - dy * sn) / view.s; view.cy = w[1] - (dx * sn + dy * c) / view.s; draw();
   }
   $('zin').onclick = function () { zoomAt(W / 2, H / 2, 1.6); };
   $('zout').onclick = function () { zoomAt(W / 2, H / 2, 1 / 1.6); };
-  $('zfit').onclick = function () { fitRoute(); };
+  $('zfit').onclick = function () { if (D.on) D.follow = false; fitRoute(); };
   function fitRoute() {
     if (!G) return;
     var r = state.results && state.results[state.mode];
@@ -433,23 +445,71 @@
     var r = state.results && state.results[state.mode];
     if (!r) return;
     if (!navigator.geolocation) { geoErr(); return; }
-    buildDrive(r); D.on = true; D.follow = true; D.pos = null;
+    buildDrive(r); D.on = true; D.follow = true; D.pos = null; D.disp = null; D.head = null; D.userZoom = false; D.zoom = 0.3;
     document.body.classList.add('driving'); resize();
     $('navdist').textContent = 'Haetaan sijaintia…'; $('navtxt').textContent = ''; $('navic').innerHTML = ''; $('spd').style.display = 'none';
     say('Aloitetaan. ' + VEH_GEN[state.vehicle] + ' reitti, ' + fmtTime(r.time) + '.');
     keepAwake();
-    D.watch = navigator.geolocation.watchPosition(onPos, function (e) { geoErr(e); if (e.code === 1) stopDrive(); },
+    D.watch = navigator.geolocation.watchPosition(onPos, function (e) {
+      if (e.code === 1) { geoErr(e); stopDrive(); }
+      else if (D.pos) { if (performance.now() - (D.tFix || 0) > 15000) toast('GPS-signaali on heikko. Jatka ajoa, sijainti päivittyy kun signaali palaa.'); }
+      else geoErr(e);
+    },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
   }
   function stopDrive() {
     if (D.watch !== null) navigator.geolocation.clearWatch(D.watch);
-    D.watch = null; D.on = false; D.pos = null;
+    D.watch = null; D.on = false; D.pos = null; D.disp = null; view.rot = 0;
     if (D.lock) { try { D.lock.release(); } catch (e) {} D.lock = null; }
     if (window.speechSynthesis) speechSynthesis.cancel();
     document.body.classList.remove('driving'); resize(); fitRoute();
   }
   $('navstop').onclick = stopDrive;
-  $('navcenter').onclick = function () { D.follow = true; if (D.pos) { var xy = G.toXY(D.pos.lat, D.pos.lon); view.cx = xy[0]; view.cy = xy[1]; view.s = Math.max(view.s, 0.15); draw(); } };
+  $('navcenter').onclick = function () { D.follow = true; D.userZoom = false; animate(); };
+  $('navnorth').onclick = function () {
+    D.northUp = !D.northUp; $('navnorth').setAttribute('aria-pressed', String(D.northUp));
+    $('navnorth').setAttribute('aria-label', D.northUp ? 'Pohjoinen ylös. Vaihda ajosuunta ylös' : 'Ajosuunta ylös. Vaihda pohjoinen ylös');
+    toast(D.northUp ? 'Pohjoinen ylöspäin' : 'Ajosuunta ylöspäin'); animate();
+  };
+
+  // Kamera: liikuttaa sijaintia tasaisesti GPS-pisteiden välillä ja kääntää kartan ajosuuntaan
+  function angDiff(a, b) { var d = (b - a) % (2 * Math.PI); if (d > Math.PI) d -= 2 * Math.PI; if (d < -Math.PI) d += 2 * Math.PI; return d; }
+  var animRaf = 0, animLast = 0;
+  function animate() { if (!animRaf) { animLast = performance.now(); animRaf = requestAnimationFrame(tick); } }
+  function tick(now) {
+    animRaf = 0; if (!D.on || !D.disp) return;
+    var dt = Math.min(100, now - animLast); animLast = now;
+    var busy = false;
+    // Sijainti: lineaarinen siirtymä edellisestä pisteestä uuteen
+    var t = Math.min(1, (now - D.t0) / D.dur);
+    D.disp = [D.from[0] + (D.to[0] - D.from[0]) * t, D.from[1] + (D.to[1] - D.from[1]) * t];
+    if (t < 1) busy = true;
+    // Suunta
+    if (D.head !== null) {
+      var dh = angDiff(D.headDisp, D.head); D.headDisp += dh * Math.min(1, dt / 250);
+      if (Math.abs(dh) > 0.005) busy = true;
+    }
+    if (D.follow) {
+      view.cx = D.disp[0]; view.cy = D.disp[1];
+      var tr = D.northUp || D.head === null ? 0 : D.headDisp, dr = angDiff(view.rot, tr);
+      view.rot += dr * Math.min(1, dt / 300); if (Math.abs(dr) > 0.003) busy = true;
+      if (!D.userZoom) { var ds = D.zoom - view.s; view.s += ds * Math.min(1, dt / 600); if (Math.abs(ds) > 0.002) busy = true; }
+    }
+    render();
+    var cmp = $('navnorth').firstElementChild; if (cmp) cmp.style.transform = 'rotate(' + (-view.rot) + 'rad)';
+    if (busy) animRaf = requestAnimationFrame(tick);
+  }
+  function routeBearing(along) {
+    // Suunta reitillä noin 30 m eteenpäin nykyisestä kohdasta
+    var P = D.pts, i = D.last, a = null, b = null;
+    for (var k = Math.max(0, i); k < P.length; k++) { if (P[k].d >= along) { a = k; break; } }
+    if (a === null) return null;
+    for (k = a; k < P.length; k++) { if (P[k].d >= along + 30) { b = k; break; } }
+    if (b === null) b = P.length - 1;
+    var A = a > 0 ? P[a - 1] : P[a], B = P[b];
+    if (A === B || (Math.abs(B.x - A.x) + Math.abs(B.y - A.y)) < 1) return null;
+    return Math.atan2(B.x - A.x, -(B.y - A.y));
+  }
   $('navmute').onclick = function () {
     D.muted = !D.muted; $('navmute').setAttribute('aria-pressed', String(D.muted));
     $('navmute').setAttribute('aria-label', D.muted ? 'Ääniohjeet pois' : 'Ääniohjeet päällä');
@@ -468,9 +528,19 @@
 
   function onPos(p) {
     var c = p.coords; D.pos = { lat: c.latitude, lon: c.longitude, acc: c.accuracy || 30, heading: c.heading, speed: c.speed };
-    var xy = G.toXY(c.latitude, c.longitude), pr = project(xy[0], xy[1]);
-    if (D.follow) { view.cx = xy[0]; view.cy = xy[1]; if (view.s < 0.12) view.s = 0.18; }
-    draw();
+    var xy = G.toXY(c.latitude, c.longitude), pr = project(xy[0], xy[1]), nowT = performance.now();
+    // Tasainen liike: siirrytään edellisestä näyttöpisteestä uuteen GPS-pisteeseen GPS-välin aikana
+    if (!D.disp) { D.disp = xy; D.from = xy; D.to = xy; D.t0 = nowT; D.dur = 1; view.cx = xy[0]; view.cy = xy[1]; view.s = 0.3; }
+    else { D.from = D.disp; D.to = xy; D.dur = Math.max(300, Math.min(1500, nowT - (D.tFix || nowT - 1000))); D.t0 = nowT; }
+    D.tFix = nowT;
+    // Ajosuunta: reitin suunta kun ollaan reitillä, muuten GPS:n suunta liikkeessä
+    var tolH = Math.max(45, Math.min(D.pos.acc, 80)), hd = null;
+    if (pr.off <= tolH) hd = routeBearing(pr.along);
+    if (hd === null && c.heading !== null && !isNaN(c.heading) && (c.speed || 0) > 1.5) hd = c.heading * Math.PI / 180;
+    if (hd !== null) { if (D.head === null) D.headDisp = hd; D.head = hd; }
+    // Zoom nopeuden mukaan: hitaasti lähempää, kovempaa kauempaa
+    var v = c.speed || 0; D.zoom = v < 5 ? 0.34 : v < 10 ? 0.27 : v < 15 ? 0.21 : 0.17;
+    animate();
     // Reitiltä poikkeaminen
     var tol = Math.max(45, Math.min(D.pos.acc, 80)), now = Date.now();
     if (pr.off > tol) {
@@ -505,7 +575,7 @@
     else if (dist <= 70 && !D.said[i + 'n']) { D.said[i + 'n'] = 1; D.said[i + 'f'] = 1; say(txt[0] === 'Perillä' ? 'Määränpää on edessä.' : txt[0] + ' nyt' + (txt[1] ? ', ' + txt[1] : '') + '.'); }
     // Jäljellä
     var r = D.route, secs = r.time * (remain / Math.max(1, D.total)), eta = new Date(Date.now() + secs * 1000);
-    $('navrem').innerHTML = '<b>' + fmtTime(secs) + '</b><br>' + fmtKm(remain) + ' · perillä ' + String(eta.getHours()).padStart(2, '0') + '.' + String(eta.getMinutes()).padStart(2, '0');
+    $('navrem').innerHTML = '<b>' + fmtTime(secs) + '</b><br>' + fmtKm(remain) + ' · ' + String(eta.getHours()).padStart(2, '0') + '.' + String(eta.getMinutes()).padStart(2, '0');
   }
 
   resize();
