@@ -6,6 +6,8 @@
   var state = { a: null, b: null, vehicle: 'mopoauto', mode: 'suositeltu', results: null, car: null, showCar: true, active: null };
   var COLORS = { safe: '#1F8A5E', s60: '#E3A600', s80: '#E07B1F', s90: '#D63C3C', asf: '#0F1A21' };
   var $ = function (id) { return document.getElementById(id); };
+  var VEH_ADE = { mopoauto: 'mopoautolla', polle: 'traktorimönkijällä', car: 'autolla' };
+  var VEH_GEN = { mopoauto: 'Mopoauton', polle: 'Traktorimönkijän', car: 'Auton' };
 
   // ---------- Apurit ----------
   function fmtKm(m) { if (m < 950) return (Math.round(m / 10) * 10) + ' m'; return (m / 1000).toFixed(m < 10000 ? 1 : 0).replace('.', ',') + ' km'; }
@@ -92,11 +94,13 @@
     strokeLayer(layers.mid, '#FFFFFF', z > 0.05 ? 5 : 2);
     strokeLayer(layers.major, '#F7D58A', z > 0.05 ? 6 : 3);
     strokeLayer(layers.motor, '#E9A27E', z > 0.05 ? 7 : 3.5);
-    var ban = state.vehicle === 'polle' ? layers.banPol : layers.banMop;
-    ctx.setLineDash([3 / z, 4 / z]); strokeLayer(ban, 'rgba(214,60,60,.75)', z > 0.05 ? 3 : 1.6); ctx.setLineDash([]);
+    if (state.vehicle !== 'car') {
+      var ban = state.vehicle === 'polle' ? layers.banPol : layers.banMop;
+      ctx.setLineDash([3 / z, 4 / z]); strokeLayer(ban, 'rgba(214,60,60,.75)', z > 0.05 ? 3 : 1.6); ctx.setLineDash([]);
+    }
 
     // Autoreitti vertailuna
-    if (state.showCar && state.car) {
+    if (state.showCar && state.car && state.vehicle !== 'car') {
       polyline(routePts(state.car), 'rgba(15,26,33,.55)', 3, [6, 6]);
       var fl = state.vehicle === 'polle' ? S.F.POL : S.F.MOP;
       state.car.path.forEach(function (s) { var e = (s > 0 ? s : -s) - 1; if (!(G.eFlags[e] & fl)) polyline(G.edgePoints(s), COLORS.s90, 5); });
@@ -295,11 +299,16 @@
     $('results').innerHTML = '<p class="empty">Lasketaan reittiä…</p>';
     setTimeout(function () {
       var res = {};
-      ['suositeltu', 'nopein', 'turvallisin'].forEach(function (m) { res[m] = G.route(state.a.node, state.b.node, state.vehicle, m); });
+      ['suositeltu', 'nopein', 'turvallisin'].forEach(function (m) {
+        // Autolla suositeltu = nopein, joten nopeinta ei näytetä erikseen
+        if (state.vehicle === 'car' && m === 'nopein') return;
+        res[m] = G.route(state.a.node, state.b.node, state.vehicle, state.vehicle === 'car' && m === 'suositeltu' ? 'nopein' : m);
+      });
+      if (state.vehicle === 'car' && state.mode === 'nopein') state.mode = 'suositeltu';
       var ca = G.nearest(state.a.lat, state.a.lon, S.F.CAR), cb = G.nearest(state.b.lat, state.b.lon, S.F.CAR);
       state.car = ca && cb ? G.route(ca.node, cb.node, 'car', 'nopein') : null;
       state.results = res.suositeltu ? res : null;
-      renderResults(state.results ? null : 'Sallittua reittiä ei löytynyt. Määränpää voi olla tien varrella, jolla ' + (state.vehicle === 'polle' ? 'traktorimönkijällä' : 'mopoautolla') + ' ei saa ajaa.');
+      renderResults(state.results ? null : 'Sallittua reittiä ei löytynyt. Määränpää voi olla tien varrella, jolla ' + VEH_ADE[state.vehicle] + ' ei saa ajaa.');
       fitRoute();
     }, 20);
   }
@@ -334,10 +343,10 @@
     cats.forEach(function (c) { var v = r.bySpeed[c[0]] || 0; if (v) html += '<span><i style="background:' + c[2] + '"></i>' + c[1] + ' ' + fmtKm(v) + '</span>'; });
     html += '</div>';
     var fast = (r.bySpeed['70–80'] || 0) + (r.bySpeed['90+'] || 0);
-    if (fast > 300) html += '<div class="note warn">Reitillä on ' + fmtKm(fast) + ' teillä, joilla autot ajavat 70 km/h tai lujempaa. Pysy oikeassa reunassa ja päästä jono ohi.</div>';
+    if (fast > 300 && state.vehicle !== 'car') html += '<div class="note warn">Reitillä on ' + fmtKm(fast) + ' teillä, joilla autot ajavat 70 km/h tai lujempaa. Pysy oikeassa reunassa ja päästä jono ohi.</div>';
     // Vertailu autoreittiin
-    var veh = state.vehicle === 'polle' ? 'traktorimönkijällä' : 'mopoautolla';
-    if (state.car) {
+    var veh = VEH_ADE[state.vehicle];
+    if (state.car && state.vehicle !== 'car') {
       var bannedKm = state.vehicle === 'polle' ? state.car.banned.pol : state.car.banned.mop;
       if (bannedKm > 50) html += '<div class="note car">Autoreitti (' + fmtTime(state.car.time) + ') kulkee <b>' + fmtKm(bannedKm) + '</b> teillä, joilla ' + veh + ' ei saa ajaa. Ne näkyvät kartalla punaisella.</div>';
       else html += '<div class="note ok">Autoreitti olisi tällä kertaa sallittu, mutta sen Safety Score on ' + state.car.safety + ' (tämä reitti ' + r.safety + ').</div>';
@@ -427,7 +436,7 @@
     buildDrive(r); D.on = true; D.follow = true; D.pos = null;
     document.body.classList.add('driving'); resize();
     $('navdist').textContent = 'Haetaan sijaintia…'; $('navtxt').textContent = ''; $('navic').innerHTML = ''; $('spd').style.display = 'none';
-    say('Aloitetaan. ' + ((state.vehicle === 'polle') ? 'Traktorimönkijän' : 'Mopoauton') + ' reitti, ' + fmtTime(r.time) + '.');
+    say('Aloitetaan. ' + VEH_GEN[state.vehicle] + ' reitti, ' + fmtTime(r.time) + '.');
     keepAwake();
     D.watch = navigator.geolocation.watchPosition(onPos, function (e) { geoErr(e); if (e.code === 1) stopDrive(); },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
