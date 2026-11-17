@@ -174,8 +174,9 @@
   }
 
   // ---------- Ajonäkymä: tumma kartta ja 3D-perspektiivi ----------
-  var DT = { bg: '#0E3A4A', casing: '#2B3866', minor: '#5A6A9E', mid: '#7181BA', major: '#8A99D3', motor: '#A2AEE2', ban: 'rgba(242,139,130,.9)',
-    routeCase: '#08778C', route: '#22D3EE', routeFast: '#FDBA4D', label: '#E8EAED' };
+  // Sideroad-paletti: asfaltti, frost, hi-vis-keltainen, turvallinen vihreä, kielletty punainen
+  var DT = { bg: '#0F1A21', casing: '#081015', minor: '#2A3941', mid: '#38484F', major: '#4C5E65', motor: '#5F7076', ban: 'rgba(214,60,60,.95)',
+    routeCase: '#0F1A21', route: '#FFC21A', routeFast: '#F07E2B', label: '#C9D2D0', fog: '15,26,33' };
   var TIER_W = [5.5, 7.5, 9.5, 11.5]; // tien leveys metreinä: pienet, keskisuuret, pääteiden, moottoriteiden
   function renderDrive() {
     var tilt = D.overview ? 0 : 0.87, P = H * 1.1, cT = Math.cos(tilt), sT = Math.sin(tilt);
@@ -249,7 +250,7 @@
     // Usva horisontissa
     if (tilt > 0) {
       var gr = ctx.createLinearGradient(0, 0, 0, H * 0.34);
-      gr.addColorStop(0, 'rgba(14,58,74,1)'); gr.addColorStop(0.45, 'rgba(14,58,74,.85)'); gr.addColorStop(1, 'rgba(14,58,74,0)');
+      gr.addColorStop(0, 'rgba(' + DT.fog + ',1)'); gr.addColorStop(0.45, 'rgba(' + DT.fog + ',.85)'); gr.addColorStop(1, 'rgba(' + DT.fog + ',0)');
       ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H * 0.34);
     }
     // Paikannimet
@@ -264,7 +265,7 @@
       for (var i = 0; i < placed.length; i++) if (Math.abs(placed[i][0] - px) < 100 && Math.abs(placed[i][1] - py) < 24) return;
       placed.push([px, py]);
       ctx.font = '500 ' + Math.round(Math.max(11, Math.min(16, 14 * k))) + 'px Figtree, sans-serif';
-      ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(14,58,74,.95)'; ctx.strokeText(p.n, px, py);
+      ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(' + DT.fog + ',.95)'; ctx.strokeText(p.n, px, py);
       ctx.fillStyle = DT.label; ctx.fillText(p.n, px, py);
     });
     // Määränpää (punainen nuppineula)
@@ -272,14 +273,28 @@
       var bx = G.xy(state.b.node);
       if (proj(bx[0], bx[1]) && out[1] > 0) {
         var X0 = out[0], Y0 = out[1];
-        ctx.beginPath(); ctx.arc(X0, Y0, 7, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#111'; ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(X0, Y0 - 6); ctx.bezierCurveTo(X0 - 16, Y0 - 26, X0 - 13, Y0 - 44, X0, Y0 - 44); ctx.bezierCurveTo(X0 + 13, Y0 - 44, X0 + 16, Y0 - 26, X0, Y0 - 6);
-        ctx.fillStyle = '#EA4335'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#A50E0E'; ctx.stroke();
-        ctx.beginPath(); ctx.arc(X0, Y0 - 31, 5, 0, Math.PI * 2); ctx.fillStyle = '#A50E0E'; ctx.fill();
+        ctx.beginPath(); ctx.ellipse(X0, Y0, 8, 4, 0, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,194,26,.35)'; ctx.fill();
+        ctx.fillStyle = '#F1F4F2'; ctx.fillRect(X0 - 1.5, Y0 - 30, 3, 30);
+        ctx.beginPath(); roundRect(X0 - 14, Y0 - 58, 28, 28, 8); ctx.fillStyle = '#FFC21A'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#0F1A21'; ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(X0 - 5, Y0 - 50); ctx.lineTo(X0 - 5, Y0 - 37); ctx.moveTo(X0 - 5, Y0 - 50); ctx.lineTo(X0 + 6, Y0 - 46.5); ctx.lineTo(X0 - 5, Y0 - 43);
+        ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
       }
     }
     // Oma ajoneuvo
-    if (D.disp && proj(D.disp[0], D.disp[1])) drawCar(out[0], out[1], D.head === null ? 0 : D.headDisp - view.rot, tilt > 0 ? 0.78 : 1);
+    if (D.disp && proj(D.disp[0], D.disp[1])) drawPuck(out[0], out[1], D.head === null ? 0 : D.headDisp - view.rot, tilt > 0 ? 0.8 : 1);
+  }
+  function roundRect(x0, y0, w, h, r) { ctx.moveTo(x0 + r, y0); ctx.arcTo(x0 + w, y0, x0 + w, y0 + h, r); ctx.arcTo(x0 + w, y0 + h, x0, y0 + h, r); ctx.arcTo(x0, y0 + h, x0, y0, r); ctx.arcTo(x0, y0, x0 + w, y0, r); ctx.closePath(); }
+  // Oma sijainti Sideroad-tyyliin: keltainen pyöristetty neliö ja ajosuuntanuoli (logon muoto)
+  function drawPuck(x, y, ang, squash) {
+    var g = ctx.createRadialGradient(x, y, 6, x, y, 46); g.addColorStop(0, 'rgba(255,194,26,.38)'); g.addColorStop(1, 'rgba(255,194,26,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, 46, 46 * squash, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save(); ctx.translate(x, y); ctx.scale(1, squash); ctx.rotate(ang);
+    ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 3;
+    ctx.beginPath(); roundRect(-19, -19, 38, 38, 11); ctx.fillStyle = '#FFC21A'; ctx.fill();
+    ctx.shadowColor = 'transparent'; ctx.lineWidth = 3; ctx.strokeStyle = '#0F1A21'; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(10, 11); ctx.lineTo(0, 5); ctx.lineTo(-10, 11); ctx.closePath();
+    ctx.fillStyle = '#0F1A21'; ctx.fill();
+    ctx.restore();
   }
   function drawCar(x, y, ang, squash) {
     var g = ctx.createRadialGradient(x, y, 4, x, y, 42); g.addColorStop(0, 'rgba(66,133,244,.45)'); g.addColorStop(1, 'rgba(66,133,244,0)');
@@ -735,7 +750,7 @@
     // Perillä
     if (remain < 25 && !D.arrived) {
       D.arrived = true; say('Olet perillä.');
-      $('navic').innerHTML = icon('M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z', '#fff', 40); $('navdist').textContent = 'Perillä';
+      $('navic').innerHTML = icon('M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z', '#0F1A21', 36); $('navdist').textContent = 'Perillä';
       $('navtxt').innerHTML = '<b>' + esc(state.b.label) + '</b>'; $('navthen').style.display = 'none';
       $('navrem').innerHTML = '<b>Perillä</b><span>' + esc(state.b.label) + '</span>'; return;
     }
@@ -746,14 +761,14 @@
     if (i < D.stepAt.length) {
       dist = D.stepAt[i] - along; txt = stepText(i);
     } else { dist = remain; txt = ['Perillä', state.b.label, 'M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z']; }
-    $('navic').innerHTML = icon(txt[2], '#fff', 44);
+    $('navic').innerHTML = icon(txt[2], '#0F1A21', 36);
     var straight = txt[0] === 'Jatka suoraan' || txt[0] === 'Lähde';
     if (straight && txt[1]) { $('navdist').textContent = fmtKm(dist); $('navtxt').innerHTML = 'suuntaan <b>' + esc(txt[1]) + '</b>'; }
     else { $('navdist').textContent = fmtKm(dist); $('navtxt').innerHTML = esc(txt[0]) + (txt[1] ? '<br><b>' + esc(txt[1]) + '</b>' : ''); }
     // "ja sitten": seuraava käännös, jos se tulee pian
     var nt = $('navthen');
     var t2 = i + 1 < D.stepAt.length ? stepText(i + 1) : null;
-    if (t2 && t2[2] !== TURN.straight[1] && D.stepAt[i + 1] - D.stepAt[i] < 300) { nt.innerHTML = 'ja sitten ' + icon(t2[2], '#fff', 22); nt.style.display = 'flex';
+    if (t2 && t2[2] !== TURN.straight[1] && D.stepAt[i + 1] - D.stepAt[i] < 300) { nt.innerHTML = 'ja sitten ' + icon(t2[2], '#FFC21A', 20); nt.style.display = 'flex';
     } else nt.style.display = 'none';
     var spoken = txt[0].toLowerCase() + (txt[1] ? ', ' + txt[1] : '');
     if (dist < 400 && dist > 150 && !D.said[i + 'f']) { D.said[i + 'f'] = 1; say(spokenDist(dist) + ' päästä ' + spoken + '.'); }
