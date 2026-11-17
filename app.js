@@ -43,7 +43,7 @@
   // ---------- Kartta ----------
   var cv = $('map'), ctx = cv.getContext('2d'), dpr = 1, W = 0, H = 0;
   var view = { cx: 0, cy: 0, s: 0.02, rot: 0 }; // s = px / m, rot = kartan kierto (rad, ajosuunta ylös)
-  var layers = null;
+  var layers = null, DR = null;
   function resize() {
     dpr = window.devicePixelRatio || 1; var r = cv.getBoundingClientRect(); W = r.width; H = r.height;
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); draw();
@@ -61,6 +61,18 @@
       if (!(fl & S.F.POL)) { tiers.banPol.moveTo(pts[0][0], pts[0][1]); for (i = 1; i < pts.length; i++) tiers.banPol.lineTo(pts[i][0], pts[i][1]); }
     }
     layers = tiers;
+    // Ajonäkymää varten: kaarien pisteet yhtenä taulukkona ja ruudukkoindeksi
+    var tot = 0; for (e = 0; e < G.nE; e++) tot += G.eGeomCount[e] + 2;
+    var EX = new Float32Array(tot * 2), EO = new Uint32Array(G.nE), EC = new Uint16Array(G.nE), k = 0, grid = new Map(), CELL = 300;
+    for (e = 0; e < G.nE; e++) {
+      var q = G.edgePoints(e + 1), x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      EO[e] = k; EC[e] = q.length;
+      for (i = 0; i < q.length; i++) { EX[2 * k] = q[i][0]; EX[2 * k + 1] = q[i][1]; k++; x0 = Math.min(x0, q[i][0]); x1 = Math.max(x1, q[i][0]); y0 = Math.min(y0, q[i][1]); y1 = Math.max(y1, q[i][1]); }
+      for (var gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++) for (var gy = Math.floor(y0 / CELL); gy <= Math.floor(y1 / CELL); gy++) {
+        var key = gx + ',' + gy, arr = grid.get(key); if (!arr) { arr = []; grid.set(key, arr); } arr.push(e);
+      }
+    }
+    DR = { EX: EX, EO: EO, EC: EC, grid: grid, CELL: CELL, stamp: new Uint32Array(G.nE), frame: 0 };
   }
   function fitBounds(pts) {
     var minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity, i;
@@ -73,7 +85,7 @@
   }
   // Ankkuri: ajotilassa oma sijainti on ruudun alaosassa, jotta edessä oleva tie näkyy
   function ancX() { return W / 2; }
-  function ancY() { return D.on ? H * 0.7 : H / 2; }
+  function ancY() { return D.on && !D.overview ? H * 0.68 : H / 2; }
   function w2s(x, y) {
     var dx = (x - view.cx) * view.s, dy = (y - view.cy) * view.s, c = Math.cos(view.rot), sn = Math.sin(view.rot);
     return [dx * c + dy * sn + ancX(), -dx * sn + dy * c + ancY()];
@@ -94,6 +106,7 @@
   function draw() { if (!raf) raf = requestAnimationFrame(render); }
   function render() {
     raf = 0; if (!W) { var r = cv.getBoundingClientRect(); W = r.width; H = r.height; }
+    if (D.on && G && DR) { renderDrive(); return; }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.fillStyle = '#E4EAE7'; ctx.fillRect(0, 0, W, H);
     if (!G || !layers) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.translate(ancX(), ancY()); ctx.rotate(-view.rot);
@@ -160,6 +173,131 @@
     });
   }
 
+  // ---------- Ajonäkymä: tumma kartta ja 3D-perspektiivi ----------
+  var DT = { bg: '#0E3A4A', casing: '#2B3866', minor: '#5A6A9E', mid: '#7181BA', major: '#8A99D3', motor: '#A2AEE2', ban: 'rgba(242,139,130,.9)',
+    routeCase: '#08778C', route: '#22D3EE', routeFast: '#FDBA4D', label: '#E8EAED' };
+  var TIER_W = [5.5, 7.5, 9.5, 11.5]; // tien leveys metreinä: pienet, keskisuuret, pääteiden, moottoriteiden
+  function renderDrive() {
+    var tilt = D.overview ? 0 : 0.87, P = H * 1.1, cT = Math.cos(tilt), sT = Math.sin(tilt);
+    var ax = ancX(), ay = ancY(), s = view.s, cr = Math.cos(view.rot), sr = Math.sin(view.rot), cx = view.cx, cy = view.cy;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.fillStyle = DT.bg; ctx.fillRect(0, 0, W, H);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    var out = [0, 0, 0];
+    function proj(x, y) {
+      var dx = x - cx, dy = y - cy, X = (dx * cr + dy * sr) * s, Y = (-dx * sr + dy * cr) * s;
+      var den = P - Y * sT; if (den < P * 0.3) return false;
+      var k = P / den; out[0] = ax + X * k; out[1] = ay + Y * cT * k; out[2] = k; return true;
+    }
+    // Näkyvät kaaret ruudukosta
+    var R = D.overview ? Math.hypot(W, H) / s : Math.min(4000, Math.max(900, 2.6 * H / s));
+    var C = DR.CELL, g0x = Math.floor((cx - R) / C), g1x = Math.floor((cx + R) / C), g0y = Math.floor((cy - R) / C), g1y = Math.floor((cy + R) / C);
+    var fr = ++DR.frame, edges = [];
+    for (var gx = g0x; gx <= g1x; gx++) for (var gy = g0y; gy <= g1y; gy++) {
+      var arr = DR.grid.get(gx + ',' + gy); if (!arr) continue;
+      for (var j = 0; j < arr.length; j++) { var e = arr[j]; if (DR.stamp[e] !== fr) { DR.stamp[e] = fr; edges.push(e); } }
+    }
+    // Tiet: tasot × syvyysluokat, ensin reunus, sitten täyttö
+    var NB = 5, BK = [0.35, 0.55, 0.8, 1.1, 1.5];
+    var paths = [], banP = new Path2D(), banFlag = state.vehicle === 'polle' ? S.F.POL : S.F.MOP, showBan = state.vehicle !== 'car';
+    for (var t = 0; t < 4; t++) { paths.push([]); for (var b = 0; b < NB; b++) paths[t].push(new Path2D()); }
+    var EX = DR.EX;
+    for (var n = 0; n < edges.length; n++) {
+      var ed = edges[n], c = G.eClass[ed], tier = c <= 1 ? 3 : c <= 5 ? 2 : c <= 9 ? 1 : 0;
+      var o = DR.EO[ed], m = DR.EC[ed], started = false, kSum = 0, kN = 0, pth = null, segs = [];
+      for (var q = 0; q < m; q++) {
+        if (proj(EX[2 * (o + q)], EX[2 * (o + q) + 1])) { segs.push(out[0], out[1], started ? 1 : 0); kSum += out[2]; kN++; started = true; }
+        else started = false;
+      }
+      if (kN < 2) continue;
+      var kk = kSum / kN, bi = kk < 0.45 ? 0 : kk < 0.67 ? 1 : kk < 0.95 ? 2 : kk < 1.3 ? 3 : 4;
+      pth = paths[tier][bi];
+      var ban = showBan && !(G.eFlags[ed] & banFlag);
+      for (var z = 0; z < segs.length; z += 3) {
+        if (segs[z + 2]) { pth.lineTo(segs[z], segs[z + 1]); if (ban) banP.lineTo(segs[z], segs[z + 1]); }
+        else { pth.moveTo(segs[z], segs[z + 1]); if (ban) banP.moveTo(segs[z], segs[z + 1]); }
+      }
+    }
+    var cols = [DT.minor, DT.mid, DT.major, DT.motor];
+    for (t = 0; t < 4; t++) for (b = 0; b < NB; b++) {
+      var wpx = Math.max(1.2, TIER_W[t] * s * BK[b]);
+      ctx.strokeStyle = DT.casing; ctx.lineWidth = wpx + 3; ctx.stroke(paths[t][b]);
+    }
+    for (t = 0; t < 4; t++) for (b = 0; b < NB; b++) {
+      ctx.strokeStyle = cols[t]; ctx.lineWidth = Math.max(1.2, TIER_W[t] * s * BK[b]); ctx.stroke(paths[t][b]);
+    }
+    if (showBan) { ctx.strokeStyle = DT.ban; ctx.lineWidth = 2.5; ctx.setLineDash([7, 6]); ctx.stroke(banP); ctx.setLineDash([]); }
+
+    // Reitti: vain jäljellä oleva osuus, paksuus syvyyden mukaan
+    if (D.pts) {
+      var P2 = D.pts, from = Math.max(0, D.last - 1), seg = [];
+      for (var ri = from; ri < P2.length; ri++) {
+        if (proj(P2[ri].x, P2[ri].y)) seg.push([out[0], out[1], out[2], G.eSpeed[P2[ri].e]]); else seg.push(null);
+      }
+      // ensimmäinen piste kiinni omaan sijaintiin, jotta reitti alkaa nuolesta
+      if (D.disp && D.follow && seg.length && seg[0] && proj(D.disp[0], D.disp[1])) seg[0] = [out[0], out[1], out[2], seg[0][3]];
+      for (var pass = 0; pass < 2; pass++) {
+        for (ri = 1; ri < seg.length; ri++) {
+          var A = seg[ri - 1], B = seg[ri]; if (!A || !B) continue;
+          var w = Math.max(4, 13 * s * (A[2] + B[2]) / 2);
+          ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]);
+          if (pass === 0) { ctx.strokeStyle = DT.routeCase; ctx.lineWidth = w + 5; }
+          else { ctx.strokeStyle = B[3] >= 70 && state.vehicle !== 'car' ? DT.routeFast : DT.route; ctx.lineWidth = w; }
+          ctx.stroke();
+        }
+      }
+    }
+    // Usva horisontissa
+    if (tilt > 0) {
+      var gr = ctx.createLinearGradient(0, 0, 0, H * 0.34);
+      gr.addColorStop(0, 'rgba(14,58,74,1)'); gr.addColorStop(0.45, 'rgba(14,58,74,.85)'); gr.addColorStop(1, 'rgba(14,58,74,0)');
+      ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H * 0.34);
+    }
+    // Paikannimet
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    var maxR = s > 0.6 ? 4 : s > 0.25 ? 3 : 2, placed = [];
+    PLACES.forEach(function (p) {
+      if (p.r > maxR) return;
+      var xy = G.toXY(p.lat, p.lon); if (Math.abs(xy[0] - cx) > R || Math.abs(xy[1] - cy) > R) return;
+      if (!proj(xy[0], xy[1])) return;
+      var px = out[0], py = out[1], k = out[2];
+      if (py < H * 0.2 || py > H - 140 || px < 10 || px > W - 10) return;
+      for (var i = 0; i < placed.length; i++) if (Math.abs(placed[i][0] - px) < 100 && Math.abs(placed[i][1] - py) < 24) return;
+      placed.push([px, py]);
+      ctx.font = '500 ' + Math.round(Math.max(11, Math.min(16, 14 * k))) + 'px Figtree, sans-serif';
+      ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(14,58,74,.95)'; ctx.strokeText(p.n, px, py);
+      ctx.fillStyle = DT.label; ctx.fillText(p.n, px, py);
+    });
+    // Määränpää (punainen nuppineula)
+    if (state.b) {
+      var bx = G.xy(state.b.node);
+      if (proj(bx[0], bx[1]) && out[1] > 0) {
+        var X0 = out[0], Y0 = out[1];
+        ctx.beginPath(); ctx.arc(X0, Y0, 7, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#111'; ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(X0, Y0 - 6); ctx.bezierCurveTo(X0 - 16, Y0 - 26, X0 - 13, Y0 - 44, X0, Y0 - 44); ctx.bezierCurveTo(X0 + 13, Y0 - 44, X0 + 16, Y0 - 26, X0, Y0 - 6);
+        ctx.fillStyle = '#EA4335'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#A50E0E'; ctx.stroke();
+        ctx.beginPath(); ctx.arc(X0, Y0 - 31, 5, 0, Math.PI * 2); ctx.fillStyle = '#A50E0E'; ctx.fill();
+      }
+    }
+    // Oma ajoneuvo
+    if (D.disp && proj(D.disp[0], D.disp[1])) drawCar(out[0], out[1], D.head === null ? 0 : D.headDisp - view.rot, tilt > 0 ? 0.78 : 1);
+  }
+  function drawCar(x, y, ang, squash) {
+    var g = ctx.createRadialGradient(x, y, 4, x, y, 42); g.addColorStop(0, 'rgba(66,133,244,.45)'); g.addColorStop(1, 'rgba(66,133,244,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, 42, 42 * squash, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save(); ctx.translate(x, y); ctx.scale(1, squash); ctx.rotate(ang);
+    function rr(x0, y0, w, h, r) { ctx.beginPath(); ctx.moveTo(x0 + r, y0); ctx.arcTo(x0 + w, y0, x0 + w, y0 + h, r); ctx.arcTo(x0 + w, y0 + h, x0, y0 + h, r); ctx.arcTo(x0, y0 + h, x0, y0, r); ctx.arcTo(x0, y0, x0 + w, y0, r); ctx.closePath(); }
+    ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 3;
+    rr(-14, -24, 28, 48, 10); ctx.fillStyle = '#E8EAED'; ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.lineWidth = 1.5; ctx.strokeStyle = '#9AA0A6'; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-11, -9); ctx.lineTo(11, -9); ctx.lineTo(9, -16); ctx.lineTo(-9, -16); ctx.closePath(); ctx.fillStyle = '#1F3A68'; ctx.fill();   // tuulilasi
+    rr(-10, -7, 20, 20, 4); ctx.fillStyle = '#FFFFFF'; ctx.fill();                                                                                            // katto
+    ctx.beginPath(); ctx.moveTo(-10, 15); ctx.lineTo(10, 15); ctx.lineTo(8, 20); ctx.lineTo(-8, 20); ctx.closePath(); ctx.fillStyle = '#1F3A68'; ctx.fill();   // takalasi
+    ctx.fillStyle = '#FFC21A'; ctx.fillRect(-12, -23, 6, 3); ctx.fillRect(6, -23, 6, 3);                                                                      // valot
+    ctx.fillStyle = '#EA4335'; ctx.fillRect(-12, 21, 5, 2.5); ctx.fillRect(7, 21, 5, 2.5);
+    ctx.restore();
+  }
+
   // Panorointi, zoomaus, napautus
   var ptrs = new Map(), drag = null, moved = 0;
   cv.addEventListener('pointerdown', function (e) {
@@ -174,7 +312,7 @@
       zoomAt(drag.mid[0], drag.mid[1], (drag.s * d / drag.pinch) / view.s);
     } else if (!drag.pinch) {
       var dx = e.offsetX - drag.x, dy = e.offsetY - drag.y; moved = Math.max(moved, Math.abs(dx) + Math.abs(dy));
-      if (moved > 6 && D.on) D.follow = false;
+      if (moved > 6 && D.on && D.follow) { D.follow = false; setRecenter(); }
       var c = Math.cos(view.rot), sn = Math.sin(view.rot);
       view.cx = drag.cx - (dx * c - dy * sn) / view.s; view.cy = drag.cy - (dx * sn + dy * c) / view.s; draw();
     }
@@ -190,7 +328,7 @@
   cv.addEventListener('wheel', function (e) { e.preventDefault(); zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
   function zoomAt(px, py, f) {
     var w = s2w(px, py); view.s = Math.max(0.003, Math.min(view.s * f, 3));
-    if (D.on) { D.userZoom = true; if (D.follow) { draw(); return; } }
+    if (D.on && !D.overview) { D.userZoom = true; if (D.follow) { draw(); return; } }
     var dx = px - ancX(), dy = py - ancY(), c = Math.cos(view.rot), sn = Math.sin(view.rot);
     view.cx = w[0] - (dx * c - dy * sn) / view.s; view.cy = w[1] - (dx * sn + dy * c) / view.s; draw();
   }
@@ -331,7 +469,7 @@
     'slight-right': ['Kaarra oikealle', 'M8 20v-6l8-8M10 6h6v6'], 'slight-left': ['Kaarra vasemmalle', 'M16 20v-6L8 6M14 6H8v6'],
     uturn: ['Käänny ympäri', 'M8 20V9a4 4 0 0 1 8 0v4M12 10l4 4 4-4'], rbt: ['Aja liikenneympyrään', 'M12 20v-5M12 15a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM16 11h4']
   };
-  function icon(d) { return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0F1A21" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + d + '"/></svg>'; }
+  function icon(d, color, size) { size = size || 20; return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="' + (color || '#0F1A21') + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + d + '"/></svg>'; }
 
   function renderResults(msg) {
     var box = $('results');
@@ -445,9 +583,9 @@
     var r = state.results && state.results[state.mode];
     if (!r) return;
     if (!navigator.geolocation) { geoErr(); return; }
-    buildDrive(r); D.on = true; D.follow = true; D.pos = null; D.disp = null; D.head = null; D.userZoom = false; D.zoom = 0.3;
-    document.body.classList.add('driving'); resize();
-    $('navdist').textContent = 'Haetaan sijaintia…'; $('navtxt').textContent = ''; $('navic').innerHTML = ''; $('spd').style.display = 'none';
+    buildDrive(r); D.on = true; D.follow = true; D.overview = false; D.pos = null; D.disp = null; D.head = null; D.userZoom = false; D.zoom = 1.2;
+    document.body.classList.add('driving'); resize(); setRecenter();
+    $('navdist').textContent = 'Haetaan sijaintia…'; $('navtxt').textContent = ''; $('navic').innerHTML = ''; $('navthen').style.display = 'none'; $('spd').classList.remove('on');
     say('Aloitetaan. ' + VEH_GEN[state.vehicle] + ' reitti, ' + fmtTime(r.time) + '.');
     keepAwake();
     D.watch = navigator.geolocation.watchPosition(onPos, function (e) {
@@ -459,13 +597,51 @@
   }
   function stopDrive() {
     if (D.watch !== null) navigator.geolocation.clearWatch(D.watch);
-    D.watch = null; D.on = false; D.pos = null; D.disp = null; view.rot = 0;
+    D.watch = null; D.on = false; D.pos = null; D.disp = null; D.overview = false; view.rot = 0;
     if (D.lock) { try { D.lock.release(); } catch (e) {} D.lock = null; }
     if (window.speechSynthesis) speechSynthesis.cancel();
     document.body.classList.remove('driving'); resize(); fitRoute();
   }
   $('navstop').onclick = stopDrive;
-  $('navcenter').onclick = function () { D.follow = true; D.userZoom = false; animate(); };
+  function setRecenter() { $('recenter').style.display = D.on && (!D.follow || D.overview) ? 'grid' : 'none'; }
+  $('recenter').onclick = function () { D.follow = true; D.overview = false; D.userZoom = false; setRecenter(); animate(); draw(); };
+  $('navover').onclick = function () {
+    if (!D.route) return; D.overview = true; D.follow = false; setRecenter();
+    fitBounds(D.pts.map(function (p) { return [p.x, p.y]; })); view.s *= 0.85; draw();
+  };
+  // Ilmoitukset: tallennetaan puhelimeen, lähetetään kopioimalla
+  function loadReports() { try { return JSON.parse(localStorage.getItem('sideroad_reports') || '[]'); } catch (e) { return []; } }
+  function saveReports(a) { try { localStorage.setItem('sideroad_reports', JSON.stringify(a)); } catch (e) {} }
+  function reportsText(a) {
+    return 'Sideroad-ilmoitukset (' + a.length + ')\n' + a.map(function (r, i) {
+      var d = new Date(r.t);
+      return (i + 1) + '. ' + d.getDate() + '.' + (d.getMonth() + 1) + '. ' + String(d.getHours()).padStart(2, '0') + '.' + String(d.getMinutes()).padStart(2, '0') +
+        ' – ' + r.k + ' – ' + (r.street || '?') + ' (' + r.v + ')\n   https://www.openstreetmap.org/?mlat=' + r.lat.toFixed(5) + '&mlon=' + r.lon.toFixed(5) + '#map=18/' + r.lat.toFixed(5) + '/' + r.lon.toFixed(5);
+    }).join('\n');
+  }
+  function showReports() {
+    var a = loadReports(); $('reports').classList.toggle('has', a.length > 0);
+    $('repcount').textContent = a.length + ' ilmoitusta tallennettu tähän puhelimeen. Kopioi ja lähetä ne viestillä.';
+  }
+  $('navreport').onclick = function () { $('report').classList.add('open'); };
+  $('repcancel').onclick = function () { $('report').classList.remove('open'); };
+  Array.prototype.forEach.call(document.querySelectorAll('#report .opts2 button'), function (b) {
+    b.onclick = function () {
+      $('report').classList.remove('open');
+      if (!D.pos) { toast('Sijaintia ei vielä ole, ilmoitusta ei tallennettu.'); return; }
+      var sn = G.nearest(D.pos.lat, D.pos.lon, 0), a = loadReports();
+      a.push({ t: Date.now(), k: b.dataset.r, lat: D.pos.lat, lon: D.pos.lon, v: S.PROFILES[state.vehicle].label, street: sn ? nodeLabel(sn.node) : '' });
+      saveReports(a); showReports(); toast('Kiitos! Ilmoitus tallennettu.');
+    };
+  });
+  $('repcopy').onclick = function () {
+    var txt = reportsText(loadReports()), ta = $('reptext');
+    ta.value = txt; ta.style.display = 'block';
+    if (navigator.clipboard) navigator.clipboard.writeText(txt).then(function () { toast('Ilmoitukset kopioitu. Liitä ne viestiin.'); }, function () { ta.select(); toast('Valitse teksti ja kopioi se.'); });
+    else { ta.select(); toast('Valitse teksti ja kopioi se.'); }
+  };
+  $('repclear').onclick = function () { saveReports([]); $('reptext').style.display = 'none'; showReports(); };
+  showReports();
   $('navnorth').onclick = function () {
     D.northUp = !D.northUp; $('navnorth').setAttribute('aria-pressed', String(D.northUp));
     $('navnorth').setAttribute('aria-label', D.northUp ? 'Pohjoinen ylös. Vaihda ajosuunta ylös' : 'Ajosuunta ylös. Vaihda pohjoinen ylös');
@@ -513,7 +689,8 @@
   $('navmute').onclick = function () {
     D.muted = !D.muted; $('navmute').setAttribute('aria-pressed', String(D.muted));
     $('navmute').setAttribute('aria-label', D.muted ? 'Ääniohjeet pois' : 'Ääniohjeet päällä');
-    $('wave').style.display = D.muted ? 'none' : ''; if (D.muted && window.speechSynthesis) speechSynthesis.cancel();
+    $('wave').style.display = D.muted ? 'none' : ''; $('mutex').style.display = D.muted ? '' : 'none';
+    if (D.muted && window.speechSynthesis) speechSynthesis.cancel();
   };
 
   function reroute(lat, lon) {
@@ -530,7 +707,7 @@
     var c = p.coords; D.pos = { lat: c.latitude, lon: c.longitude, acc: c.accuracy || 30, heading: c.heading, speed: c.speed };
     var xy = G.toXY(c.latitude, c.longitude), pr = project(xy[0], xy[1]), nowT = performance.now();
     // Tasainen liike: siirrytään edellisestä näyttöpisteestä uuteen GPS-pisteeseen GPS-välin aikana
-    if (!D.disp) { D.disp = xy; D.from = xy; D.to = xy; D.t0 = nowT; D.dur = 1; view.cx = xy[0]; view.cy = xy[1]; view.s = 0.3; }
+    if (!D.disp) { D.disp = xy; D.from = xy; D.to = xy; D.t0 = nowT; D.dur = 1; view.cx = xy[0]; view.cy = xy[1]; view.s = 1.2; }
     else { D.from = D.disp; D.to = xy; D.dur = Math.max(300, Math.min(1500, nowT - (D.tFix || nowT - 1000))); D.t0 = nowT; }
     D.tFix = nowT;
     // Ajosuunta: reitin suunta kun ollaan reitillä, muuten GPS:n suunta liikkeessä
@@ -539,7 +716,7 @@
     if (hd === null && c.heading !== null && !isNaN(c.heading) && (c.speed || 0) > 1.5) hd = c.heading * Math.PI / 180;
     if (hd !== null) { if (D.head === null) D.headDisp = hd; D.head = hd; }
     // Zoom nopeuden mukaan: hitaasti lähempää, kovempaa kauempaa
-    var v = c.speed || 0; D.zoom = v < 5 ? 0.34 : v < 10 ? 0.27 : v < 15 ? 0.21 : 0.17;
+    var v = c.speed || 0; D.zoom = v < 5 ? 1.5 : v < 10 ? 1.2 : v < 15 ? 0.95 : 0.75;
     animate();
     // Reitiltä poikkeaminen
     var tol = Math.max(45, Math.min(D.pos.acc, 80)), now = Date.now();
@@ -554,12 +731,13 @@
     var along = pr.along, remain = Math.max(0, D.total - along);
     // Nopeusrajoitus
     var e = D.pts[pr.i].e, lim = G.eSpeed[e];
-    $('spd').style.display = 'grid'; $('spd').textContent = lim;
+    $('spd').classList.add('on'); $('spd').textContent = lim;
     // Perillä
     if (remain < 25 && !D.arrived) {
       D.arrived = true; say('Olet perillä.');
-      $('navic').innerHTML = icon('M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z'); $('navdist').textContent = 'Perillä';
-      $('navtxt').innerHTML = '<b>' + esc(state.b.label) + '</b>'; $('navrem').innerHTML = ''; return;
+      $('navic').innerHTML = icon('M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z', '#fff', 40); $('navdist').textContent = 'Perillä';
+      $('navtxt').innerHTML = '<b>' + esc(state.b.label) + '</b>'; $('navthen').style.display = 'none';
+      $('navrem').innerHTML = '<b>Perillä</b><span>' + esc(state.b.label) + '</span>'; return;
     }
     if (D.arrived) return;
     // Seuraava ohje
@@ -568,14 +746,21 @@
     if (i < D.stepAt.length) {
       dist = D.stepAt[i] - along; txt = stepText(i);
     } else { dist = remain; txt = ['Perillä', state.b.label, 'M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z']; }
-    $('navic').innerHTML = icon(txt[2]); $('navdist').textContent = fmtKm(dist);
-    $('navtxt').innerHTML = esc(txt[0]) + (txt[1] ? ': <b>' + esc(txt[1]) + '</b>' : '');
+    $('navic').innerHTML = icon(txt[2], '#fff', 44);
+    var straight = txt[0] === 'Jatka suoraan' || txt[0] === 'Lähde';
+    if (straight && txt[1]) { $('navdist').textContent = fmtKm(dist); $('navtxt').innerHTML = 'suuntaan <b>' + esc(txt[1]) + '</b>'; }
+    else { $('navdist').textContent = fmtKm(dist); $('navtxt').innerHTML = esc(txt[0]) + (txt[1] ? '<br><b>' + esc(txt[1]) + '</b>' : ''); }
+    // "ja sitten": seuraava käännös, jos se tulee pian
+    var nt = $('navthen');
+    var t2 = i + 1 < D.stepAt.length ? stepText(i + 1) : null;
+    if (t2 && t2[2] !== TURN.straight[1] && D.stepAt[i + 1] - D.stepAt[i] < 300) { nt.innerHTML = 'ja sitten ' + icon(t2[2], '#fff', 22); nt.style.display = 'flex';
+    } else nt.style.display = 'none';
     var spoken = txt[0].toLowerCase() + (txt[1] ? ', ' + txt[1] : '');
     if (dist < 400 && dist > 150 && !D.said[i + 'f']) { D.said[i + 'f'] = 1; say(spokenDist(dist) + ' päästä ' + spoken + '.'); }
     else if (dist <= 70 && !D.said[i + 'n']) { D.said[i + 'n'] = 1; D.said[i + 'f'] = 1; say(txt[0] === 'Perillä' ? 'Määränpää on edessä.' : txt[0] + ' nyt' + (txt[1] ? ', ' + txt[1] : '') + '.'); }
     // Jäljellä
     var r = D.route, secs = r.time * (remain / Math.max(1, D.total)), eta = new Date(Date.now() + secs * 1000);
-    $('navrem').innerHTML = '<b>' + fmtTime(secs) + '</b><br>' + fmtKm(remain) + ' · ' + String(eta.getHours()).padStart(2, '0') + '.' + String(eta.getMinutes()).padStart(2, '0');
+    $('navrem').innerHTML = '<b>' + fmtTime(secs) + '</b><span>' + fmtKm(remain) + ' · ' + String(eta.getHours()).padStart(2, '0') + '.' + String(eta.getMinutes()).padStart(2, '0') + '</span>';
   }
 
   resize();
